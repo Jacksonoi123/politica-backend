@@ -531,6 +531,33 @@ if ($path === '/game-date' && $method === 'GET') {
 
     sendJson($gameDate);
 }
+/** GET/POST /reset-date (rota administrativa com senha) */
+if ($path === '/reset-date' && in_array($method, ['GET','POST'], true)) {
+    // Checa a chave pela query (?key=jackson) ou pelo corpo JSON { "key": "jackson" }
+    $key = $_GET['key'] ?? null;
+    if ($method === 'POST' && !$key) {
+        $data = getRequestData();
+        $key = $data['key'] ?? null;
+    }
+
+    // Validação da senha
+    if ($key !== 'jackson') {
+        sendJson(['message' => 'Não autorizado.'], 401);
+    }
+
+    // Reset da data do jogo
+    $gameDate = [
+        'year' => 1989,
+        'month' => 1,
+        'day' => 1,
+        'lastUpdate' => round(microtime(true) * 1000)
+    ];
+
+    sendJson([
+        'message' => 'Data do jogo resetada!',
+        'gameDate' => $gameDate
+    ]);
+}
 
 /* ===== 404 padrão ===== */
 sendJson(['message' => 'Rota não encontrada.'], 404);
