@@ -1,15 +1,4 @@
 <?php
-// Senha padrão (mude para algo seguro)
-$password = "jackson123";
-if (!isset($_SESSION['authenticated']) && isset($_POST['password'])) {
-    echo "Depuração: Verificando senha\n";
-    if ($_POST['password'] === $password) {
-        $_SESSION['authenticated'] = true;
-        echo "Depuração: Autenticado com sucesso\n";
-    } else {
-        die("Senha incorreta! <a href='javascript:history.back()'>Voltar</a>");
-    }
-}
 // source: http://cker.name/webadmin/
 /*
  * webadmin.php - a simple Web-based file manager
@@ -124,7 +113,18 @@ if (!isset($_SESSION['authenticated']) && isset($_POST['password'])) {
  *    - introduced revision numbers
  *
 /* ------------------------------------------------------------------------- */
+if ($path === '/reset-date' && in_array($method, ['GET','POST'], true)) {
+    // Checa a chave pela query (?key=jackson) ou pelo corpo JSON { "key": "jackson" }
+    $key = $_GET['key'] ?? null;
+    if ($method === 'POST' && !$key) {
+        $data = getRequestData();
+        $key = $data['key'] ?? null;
+    }
 
+    // Validação da senha
+    if ($key !== 'jackson') {
+        sendJson(['message' => 'Não autorizado.'], 401);
+    }
 /* Your language:
  * 'en' - English
  * 'de' - German
@@ -2685,9 +2685,4 @@ function error ($phrase) {
 
 }
 
-?>
-        </div>
-        <p style='text-align: center;'><a href='https://www.youtube.com/@Jackson_Songs' target='_blank'>Criado por Jackson Songs</a></p>
-    </div></body></html>";
-}
 ?>
