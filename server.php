@@ -1,21 +1,31 @@
 <?php
+/***********************
+ * Política Game – API (PHP)
+ * Compatível com rotas com ou sem "/server.php" no caminho.
+ ***********************/
+
 header("Content-Type: application/json");
 
-// Permitir CORS só para seu frontend
+// CORS — permita somente seu frontend no Netlify
 $allowed_origin = "https://politicagame.netlify.app";
 if (isset($_SERVER['HTTP_ORIGIN']) && $_SERVER['HTTP_ORIGIN'] === $allowed_origin) {
     header("Access-Control-Allow-Origin: $allowed_origin");
-    header("Access-Control-Allow-Headers: Content-Type");
-    header("Access-Control-Allow-Methods: POST, GET, OPTIONS");
+} else {
+    // Opcional: em dev você pode liberar tudo, mas em produção mantenha restrito
+    // header("Access-Control-Allow-Origin: *");
 }
-if ($_SERVER['REQUEST_METHOD'] == 'OPTIONS') {
-    exit(0); // Preflight CORS
+header("Access-Control-Allow-Headers: Content-Type");
+header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
+
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(204);
+    exit;
 }
 
-// Configurações
-$DB_DIR = __DIR__;
+/* ===== Config ===== */
+$DB_DIR    = __DIR__;
 $USERS_FILE = $DB_DIR . "/usuarios.db";
-$NEWS_FILE = $DB_DIR . "/news.db";
+$NEWS_FILE  = $DB_DIR . "/news.db";
 
 $NATIONS = ['Brasil', 'EUA', 'China', 'Rússia', 'França', 'Alemanha', 'Japão', 'Índia', 'Reino Unido', 'Canadá'];
 
@@ -46,28 +56,33 @@ $powerLadder = [
     "Monarca", "Ditador", "Ditador Supremo"
 ];
 
-// Data inicial do jogo
+// Data do jogo (em memória)
 $gameDate = ['year' => 1989, 'month' => 1, 'day' => 1, 'lastUpdate' => round(microtime(true) * 1000)];
 
-// Funções auxiliares
-
-function encryptBase64($str) {
-    return base64_encode($str);
+/* ===== Helpers ===== */
+function sendJson($data, $status = 200) {
+    http_response_code($status);
+    echo json_encode($data, JSON_UNESCAPED_UNICODE);
+    exit;
 }
+
+function encryptBase64($str) { return base64_encode($str); }
 
 function getRequestData() {
-    $input = file_get_contents('php://input');
-    return json_decode($input, true) ?: [];
+    $raw = file_get_contents('php://input');
+    $data = json_decode($raw, true);
+    return is_array($data) ? $data : [];
 }
 
-function readFileJson($filename) {
-    if (!file_exists($filename)) return [];
-    $data = file_get_contents($filename);
-    return json_decode($data, true) ?: [];
+function readFileJson($file) {
+    if (!file_exists($file)) return [];
+    $txt = file_get_contents($file);
+    $json = json_decode($txt, true);
+    return is_array($json) ? $json : [];
 }
 
-function writeFileJson($filename, $data) {
-    file_put_contents($filename, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+function writeFileJson($file, $data) {
+    file_put_contents($file, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
 }
 
 function getUserIP() {
@@ -78,25 +93,23 @@ function getUserIP() {
 }
 
 function findUserByEmail(&$users, $emailBase64) {
-    foreach ($users as $k => $user) {
-        if ($user['email'] === $emailBase64) {
-            return $k;
-        }
+    foreach ($users as $k => $u) {
+        if (isset($u['email']) && $u['email'] === $emailBase64) return $k;
     }
     return null;
 }
 
 function updateTop30(&$users, $nation, $powerLadder, $CARGO_LIMITS) {
-    $nationUsers = array_filter($users, fn($u) => $u['nation'] === $nation);
-    usort($nationUsers, fn($a, $b) => $b['score'] <=> $a['score']);
+    $nationUsers = array_filter($users, fn($u) => ($u['nation'] ?? '') === $nation);
+    usort($nationUsers, fn($a, $b) => ($b['score'] ?? 0) <=> ($a['score'] ?? 0));
     $nationUsers = array_values($nationUsers);
 
     for ($i = 0; $i < count($nationUsers); $i++) {
-        if ($i == 0 && isset($CARGO_LIMITS['Ditador Supremo'])) {
+        if ($i === 0 && isset($CARGO_LIMITS['Ditador Supremo'])) {
             $nationUsers[$i]['role'] = $powerLadder[40];
-        } elseif ($i == 1 && isset($CARGO_LIMITS['Ditador'])) {
+        } elseif ($i === 1 && isset($CARGO_LIMITS['Ditador'])) {
             $nationUsers[$i]['role'] = $powerLadder[39];
-        } elseif ($i == 2 && isset($CARGO_LIMITS['Monarca'])) {
+        } elseif ($i === 2 && isset($CARGO_LIMITS['Monarca'])) {
             $nationUsers[$i]['role'] = $powerLadder[38];
         } else {
             $level = max(1, $nationUsers[$i]['level'] ?? 1);
@@ -104,9 +117,10 @@ function updateTop30(&$users, $nation, $powerLadder, $CARGO_LIMITS) {
         }
     }
 
+    // Propaga papéis para o array original
     foreach ($nationUsers as $nu) {
         foreach ($users as &$u) {
-            if ($u['id'] == $nu['id']) {
+            if (($u['id'] ?? null) === ($nu['id'] ?? null)) {
                 $u['role'] = $nu['role'];
             }
         }
@@ -117,69 +131,117 @@ function updateTop30(&$users, $nation, $powerLadder, $CARGO_LIMITS) {
 function updateEconomy(&$users) {
     $nationEconomies = [];
     foreach ($users as $user) {
-        $nation = $user['nation'];
-        if (!isset($nationEconomies[$nation])) {
-            $nationEconomies[$nation] = ['totalCredits' => 0, 'crisisCount' => 0];
-        }
-        $nationEconomies[$nation]['totalCredits'] += $user['credits'] ?? 0;
+        $n = $user['nation'] ?? '';
+        if (!isset($nationEconomies[$n])) $nationEconomies[$n] = ['totalCredits' => 0, 'crisisCount' => 0];
+        $nationEconomies[$n]['totalCredits'] += $user['credits'] ?? 0;
     }
-
     foreach ($users as &$user) {
-        $nation = $user['nation'];
-        $economy = &$nationEconomies[$nation];
-
-        if ($economy['totalCredits'] < $economy['totalCredits'] * 0.5 && $economy['crisisCount'] < 3) {
-            $economy['crisisCount']++;
-            $user['score'] -= 200;
-            if ($economy['crisisCount'] === 3) {
-                $user['score'] = 0;
-                if (($user['level'] ?? 0) >= 20) $user['role'] = "Ditador";
+        $n = $user['nation'] ?? '';
+        $economy = $nationEconomies[$n];
+        // A condição original no Node era meio sem sentido (comparava total com metade de si mesmo).
+        // Mantemos a lógica mas protegemos contra undefined.
+        if ($economy['crisisCount'] < 3) {
+            // Trigger fictício para "crise" — você pode ajustar depois
+            if (($economy['totalCredits'] ?? 0) <= 0) {
+                $economy['crisisCount']++;
+                $user['score'] = ($user['score'] ?? 0) - 200;
+                if ($economy['crisisCount'] === 3) {
+                    $user['score'] = 0;
+                    if (($user['level'] ?? 0) >= 20) $user['role'] = "Ditador";
+                }
             }
         }
-        $user['credits'] = max(0, ($user['credits'] ?? 0) * (1 - $economy['crisisCount'] * 0.05));
+        $cr = $economy['crisisCount'] ?? 0;
+        $user['credits'] = max(0, ($user['credits'] ?? 0) * (1 - $cr * 0.05));
     }
     unset($user);
     return $users;
 }
-$requestUri = $_SERVER['REQUEST_URI'];
-$method = $_SERVER['REQUEST_METHOD'];
-$path = parse_url($requestUri, PHP_URL_PATH);
 
-// Função para enviar resposta JSON e finalizar
-function sendJson($data, $status = 200) {
-    http_response_code($status);
-    echo json_encode($data, JSON_UNESCAPED_UNICODE);
-    exit;
+function checkElections(&$users, $nation, $gameDate, $CARGO_LIMITS) {
+    $years = [1993, 1997, 2001, 2005, 2009, 2013, 2017, 2021, 2025];
+    if (($gameDate['month'] ?? 0) === 11 && in_array(($gameDate['year'] ?? 0), $years)) {
+        $eligible = array_filter($users, fn($u) =>
+            ($u['nation'] ?? '') === $nation && !in_array(($u['role'] ?? ''), ['Ditador Supremo', 'Ditador', 'Monarca'])
+        );
+        usort($eligible, fn($a, $b) => ($b['score'] ?? 0) <=> ($a['score'] ?? 0));
+        foreach ($CARGO_LIMITS as $role => $limit) {
+            $current = array_filter($eligible, fn($u) => ($u['role'] ?? '') === $role);
+            $currentCount = count($current);
+            if ($currentCount < $limit) {
+                $needed = $limit - $currentCount;
+                $candidates = array_slice($eligible, 0, $needed);
+                foreach ($candidates as $cand) {
+                    foreach ($users as &$u) {
+                        if (($u['id'] ?? null) === ($cand['id'] ?? null)) {
+                            $u['role'] = $role;
+                        }
+                    }
+                }
+                unset($u);
+            }
+        }
+    }
 }
 
-// Carregar usuários e notícias
-$users = readFileJson($USERS_FILE);
-$news = readFileJson($NEWS_FILE);
+/* ===== Normalização do PATH =====
+ * Garante que /server.php/rota e /rota sejam tratados igual.
+ */
+$rawPath = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH) ?? '/';
+$scriptName = $_SERVER['SCRIPT_NAME'] ?? '';
+$scriptDir  = rtrim(str_replace('\\', '/', dirname($scriptName)), '/');
 
-// --- ENDPOINT /register ---
+// Remove o diretório do script do início do path, se houver
+$path = $rawPath;
+if ($scriptDir && $scriptDir !== '/' && strpos($path, $scriptDir) === 0) {
+    $path = substr($path, strlen($scriptDir));
+}
+if ($path === '') $path = '/';
+
+// Remove o próprio /server.php do início do path, se houver
+if ($scriptName && strpos($path, $scriptName) === 0) {
+    $path = substr($path, strlen($scriptName));
+}
+if (strpos($path, '/server.php') === 0) {
+    $path = substr($path, strlen('/server.php'));
+}
+$path = urldecode($path);
+if ($path === '') $path = '/';
+
+$method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+
+// Carrega dados
+$users = readFileJson($USERS_FILE);
+$news  = readFileJson($NEWS_FILE);
+
+// Função utilitária para gravar ambos
+function saveAll() {
+    global $users, $news, $USERS_FILE, $NEWS_FILE;
+    writeFileJson($USERS_FILE, $users);
+    writeFileJson($NEWS_FILE, $news);
+}
+
+/* ===== Rotas ===== */
+
+/** POST /register */
 if ($path === '/register' && $method === 'POST') {
     $data = getRequestData();
     $name = $data['name'] ?? null;
     $email = $data['email'] ?? null;
     $password = $data['password'] ?? null;
     $nation = $data['nation'] ?? null;
-
     if (!$name || !$email || !$password || !$nation || !in_array($nation, $NATIONS)) {
         sendJson(['message' => 'Dados inválidos.'], 400);
     }
-
-    $encryptedEmail = encryptBase64($email);
-    if (findUserByEmail($users, $encryptedEmail) !== null) {
+    $encEmail = encryptBase64($email);
+    if (findUserByEmail($users, $encEmail) !== null) {
         sendJson(['message' => 'Email já cadastrado.'], 400);
     }
-
-    $encryptedPassword = encryptBase64($password);
-
-    $newUser = [
+    $new = [
         'id' => count($users) + 1,
         'name' => $name,
-        'email' => $encryptedEmail,
-        'password' => $encryptedPassword,
+        'email' => $encEmail,
+        'password' => encryptBase64($password),
         'nation' => $nation,
         'role' => $powerLadder[0],
         'level' => 1,
@@ -189,82 +251,69 @@ if ($path === '/register' && $method === 'POST') {
         'skills' => new stdClass(),
         'lastIP' => null
     ];
-
-    $users[] = $newUser;
+    $users[] = $new;
     writeFileJson($USERS_FILE, $users);
     updateTop30($users, $nation, $powerLadder, $CARGO_LIMITS);
     updateEconomy($users);
     writeFileJson($USERS_FILE, $users);
-
     sendJson(['message' => 'Usuário cadastrado!'], 201);
 }
 
-// --- ENDPOINT /login ---
+/** POST /login */
 if ($path === '/login' && $method === 'POST') {
     $data = getRequestData();
     $email = $data['email'] ?? null;
     $password = $data['password'] ?? null;
-    $userIP = getUserIP();
-
     if (!$email) sendJson(['message' => 'Email é obrigatório.'], 400);
 
-    $encryptedEmail = encryptBase64($email);
-    $userKey = findUserByEmail($users, $encryptedEmail);
+    $encEmail = encryptBase64($email);
+    $idx = findUserByEmail($users, $encEmail);
+    if ($idx === null) sendJson(['message' => 'Usuário não encontrado.'], 401);
 
-    if ($userKey === null) sendJson(['message' => 'Usuário não encontrado.'], 401);
+    $userIP = getUserIP();
+    $user = $users[$idx];
 
-    $user = $users[$userKey];
-
-    // Login sem senha se IP é o mesmo
-    if ($user['lastIP'] === $userIP) {
-        $users[$userKey]['lastIP'] = $userIP;
+    if (($user['lastIP'] ?? null) === $userIP) {
+        $users[$idx]['lastIP'] = $userIP;
         writeFileJson($USERS_FILE, $users);
-        sendJson(['user' => $user]);
+        sendJson(['user' => $users[$idx]]);
     }
 
     if (!$password) sendJson(['message' => 'Senha é obrigatória.'], 400);
-    if ($user['password'] !== encryptBase64($password)) sendJson(['message' => 'Senha incorreta.'], 401);
+    if (($user['password'] ?? '') !== encryptBase64($password)) {
+        sendJson(['message' => 'Senha incorreta.'], 401);
+    }
 
-    $users[$userKey]['lastIP'] = $userIP;
-    writeFileJson($USERS_FILE, $users);
-
+    $users[$idx]['lastIP'] = $userIP;
     updateTop30($users, $user['nation'], $powerLadder, $CARGO_LIMITS);
     updateEconomy($users);
-    // checkElections não implementado nesta parte, adicionar depois se quiser
-
+    checkElections($users, $user['nation'], $gameDate, $CARGO_LIMITS);
     writeFileJson($USERS_FILE, $users);
-
-    sendJson(['user' => $users[$userKey]]);
+    sendJson(['user' => $users[$idx]]);
 }
 
-// --- ENDPOINT /update-score ---
+/** POST /update-score */
 if ($path === '/update-score' && $method === 'POST') {
     $data = getRequestData();
     $email = $data['email'] ?? null;
     $score = $data['score'] ?? null;
-
     if (!$email || $score === null) sendJson(['message' => 'Dados inválidos.'], 400);
 
-    $encryptedEmail = encryptBase64($email);
-    $userKey = findUserByEmail($users, $encryptedEmail);
+    $encEmail = encryptBase64($email);
+    $idx = findUserByEmail($users, $encEmail);
+    if ($idx === null) sendJson(['message' => 'Usuário não encontrado.'], 404);
 
-    if ($userKey === null) sendJson(['message' => 'Usuário não encontrado.'], 404);
+    $users[$idx]['score'] = ($users[$idx]['score'] ?? 0) + (int)$score;
+    $users[$idx]['level'] = min(floor(($users[$idx]['score'] ?? 0) / 100) + 1, 38);
 
-    $users[$userKey]['score'] += $score;
-    $users[$userKey]['level'] = min(floor($users[$userKey]['score'] / 100) + 1, 38);
-
-    writeFileJson($USERS_FILE, $users);
-
-    updateTop30($users, $users[$userKey]['nation'], $powerLadder, $CARGO_LIMITS);
+    updateTop30($users, $users[$idx]['nation'], $powerLadder, $CARGO_LIMITS);
     updateEconomy($users);
-    // checkElections não implementado nesta parte
-
+    checkElections($users, $users[$idx]['nation'], $gameDate, $CARGO_LIMITS);
     writeFileJson($USERS_FILE, $users);
-
-    sendJson(['user' => $users[$userKey]]);
+    sendJson(['user' => $users[$idx]]);
 }
 
-// --- ENDPOINT /global-top ---
+/** POST /global-top */
 if ($path === '/global-top' && $method === 'POST') {
     $data = getRequestData();
     $nation = $data['nation'] ?? null;
@@ -273,93 +322,61 @@ if ($path === '/global-top' && $method === 'POST') {
     updateTop30($users, $nation, $powerLadder, $CARGO_LIMITS);
     writeFileJson($USERS_FILE, $users);
 
-    $topUsers = array_filter($users, fn($u) => $u['nation'] === $nation);
-    usort($topUsers, fn($a, $b) => $b['score'] <=> $a['score']);
+    $topUsers = array_filter($users, fn($u) => ($u['nation'] ?? '') === $nation);
+    usort($topUsers, fn($a, $b) => ($b['score'] ?? 0) <=> ($a['score'] ?? 0));
     $top = array_slice($topUsers, 0, 30);
-
-    sendJson(['top' => $top]);
+    sendJson(['top' => array_values($top)]);
 }
 
-// --- ENDPOINT /change-nation ---
+/** POST /change-nation */
 if ($path === '/change-nation' && $method === 'POST') {
     $data = getRequestData();
     $email = $data['email'] ?? null;
     $newNation = $data['newNation'] ?? null;
-
     if (!$email || !$newNation || !in_array($newNation, $NATIONS)) {
         sendJson(['message' => 'Dados inválidos.'], 400);
     }
+    $encEmail = encryptBase64($email);
+    $idx = findUserByEmail($users, $encEmail);
+    if ($idx === null) sendJson(['message' => 'Usuário não encontrado.'], 404);
 
-    $encryptedEmail = encryptBase64($email);
-    $userKey = findUserByEmail($users, $encryptedEmail);
-    if ($userKey === null) sendJson(['message' => 'Usuário não encontrado.'], 404);
-
-    $users[$userKey]['nation'] = $newNation;
-    $users[$userKey]['score'] = 0;
-    $users[$userKey]['level'] = 1;
-    $users[$userKey]['role'] = $powerLadder[0];
-    $users[$userKey]['credits'] = 10;
-
-    writeFileJson($USERS_FILE, $users);
+    $users[$idx]['nation'] = $newNation;
+    $users[$idx]['score'] = 0;
+    $users[$idx]['level'] = 1;
+    $users[$idx]['role'] = $powerLadder[0];
+    $users[$idx]['credits'] = 10;
     updateTop30($users, $newNation, $powerLadder, $CARGO_LIMITS);
     updateEconomy($users);
     writeFileJson($USERS_FILE, $users);
-
     sendJson(['message' => 'Nação alterada com sucesso!']);
 }
 
-// Para qualquer outra rota:
-sendJson(['message' => 'Rota não encontrada.'], 404);
-$users = readFileJson($USERS_FILE);
-$news = readFileJson($NEWS_FILE);
-
-// Função auxiliar para salvar usuários e notícias atualizados
-function saveAll() {
-    global $users, $news, $USERS_FILE, $NEWS_FILE;
-    writeFileJson($USERS_FILE, $users);
-    writeFileJson($NEWS_FILE, $news);
-}
-
-// --- ENDPOINT /create-coup ---
+/** POST /create-coup */
 if ($path === '/create-coup' && $method === 'POST') {
     $data = getRequestData();
     $email = $data['email'] ?? null;
     $nation = $data['nation'] ?? null;
+    if (!$email || !$nation || !in_array($nation, $NATIONS)) sendJson(['message' => 'Dados inválidos.'], 400);
 
-    global $users, $powerLadder, $gameDate;
+    $encEmail = encryptBase64($email);
+    $idx = findUserByEmail($users, $encEmail);
+    if ($idx === null) sendJson(['message' => 'Usuário não encontrado.'], 404);
 
-    if (!$email || !$nation || !in_array($nation, $NATIONS)) {
-        sendJson(['message' => 'Dados inválidos.'], 400);
-    }
+    foreach ($users as &$u) { if (!isset($u['coup'])) $u['coup'] = null; }
+    unset($u);
 
-    $encryptedEmail = encryptBase64($email);
-    $userKey = findUserByEmail($users, $encryptedEmail);
-    if ($userKey === null) sendJson(['message' => 'Usuário não encontrado.'], 404);
-
-    $user = &$users[$userKey];
-
-    // Cria golpe
-    $coup = [
-        'leader' => $user['id'],
-        'members' => [$user['id']],
+    $users[$idx]['coup'] = [
+        'leader' => $users[$idx]['id'],
+        'members' => [$users[$idx]['id']],
         'nation' => $nation,
         'success' => false,
         'scoreThreshold' => 1000
     ];
-
-    // Inicializar coup para todos usuários (se necessário)
-    foreach ($users as &$u) {
-        if (!isset($u['coup'])) $u['coup'] = null;
-    }
-    unset($u);
-
-    $user['coup'] = $coup;
-
-    saveAll();
+    writeFileJson($USERS_FILE, $users);
 
     $news[] = [
         'title' => "Golpe em $nation!",
-        'content' => "{$user['name']} iniciou um golpe de estado.",
+        'content' => "{$users[$idx]['name']} iniciou um golpe de estado.",
         'date' => $gameDate['year']
     ];
     writeFileJson($NEWS_FILE, $news);
@@ -367,142 +384,115 @@ if ($path === '/create-coup' && $method === 'POST') {
     sendJson(['message' => 'Golpe criado!']);
 }
 
-// --- ENDPOINT /join-coup ---
+/** POST /join-coup  (coupId = id do líder) */
 if ($path === '/join-coup' && $method === 'POST') {
     $data = getRequestData();
     $email = $data['email'] ?? null;
-    $coupId = $data['coupId'] ?? null; // aqui coupId é o ID do líder do golpe
-
-    global $users, $powerLadder, $CARGO_LIMITS, $gameDate;
-
+    $coupId = $data['coupId'] ?? null;
     if (!$email || !$coupId) sendJson(['message' => 'Dados inválidos.'], 400);
 
-    $encryptedEmail = encryptBase64($email);
-    $userKey = findUserByEmail($users, $encryptedEmail);
-    if ($userKey === null) sendJson(['message' => 'Usuário não encontrado.'], 404);
+    $encEmail = encryptBase64($email);
+    $idx = findUserByEmail($users, $encEmail);
+    if ($idx === null) sendJson(['message' => 'Usuário não encontrado.'], 404);
 
-    $user = &$users[$userKey];
-
-    // Encontrar líder do golpe pelo ID
-    $coupLeaderKey = null;
+    // acha o líder que tem coup com leader = $coupId
+    $leaderKey = null;
     foreach ($users as $k => $u) {
-        if (isset($u['coup']) && $u['coup'] !== null && $u['coup']['leader'] == $coupId) {
-            $coupLeaderKey = $k;
-            break;
+        if (isset($u['coup']['leader']) && (string)$u['coup']['leader'] === (string)$coupId) {
+            $leaderKey = $k; break;
         }
     }
+    if ($leaderKey === null) sendJson(['message' => 'Golpe não encontrado.'], 404);
 
-    if ($coupLeaderKey === null) sendJson(['message' => 'Golpe não encontrado.'], 404);
-
-    $coupLeader = &$users[$coupLeaderKey];
-
-    // Adicionar usuário ao golpe se ainda não está
-    if (!in_array($user['id'], $coupLeader['coup']['members'])) {
-        $coupLeader['coup']['members'][] = $user['id'];
+    // adiciona membro
+    if (!in_array($users[$idx]['id'], $users[$leaderKey]['coup']['members'])) {
+        $users[$leaderKey]['coup']['members'][] = $users[$idx]['id'];
     }
-    $user['coup'] = $coupLeader['coup'];
+    $users[$idx]['coup'] = $users[$leaderKey]['coup'];
 
-    // Calcular pontuação total do golpe
+    // soma scores
     $totalScore = 0;
-    foreach ($coupLeader['coup']['members'] as $memberId) {
+    foreach ($users[$leaderKey]['coup']['members'] as $mid) {
         foreach ($users as $u) {
-            if ($u['id'] === $memberId) {
-                $totalScore += $u['score'] ?? 0;
-                break;
-            }
+            if (($u['id'] ?? null) === $mid) { $totalScore += $u['score'] ?? 0; break; }
         }
     }
 
-    // Verificar sucesso do golpe
-    if ($totalScore >= $coupLeader['coup']['scoreThreshold']) {
-        $coupLeader['coup']['success'] = true;
+    if ($totalScore >= ($users[$leaderKey]['coup']['scoreThreshold'] ?? 1000)) {
+        $users[$leaderKey]['coup']['success'] = true;
 
-        // Resetar cargos dos top 3
-        $topUsers = array_filter($users, fn($u) => $u['nation'] === $coupLeader['nation']);
-        usort($topUsers, fn($a, $b) => $b['score'] <=> $a['score']);
+        $topUsers = array_filter($users, fn($u) => ($u['nation'] ?? '') === ($users[$leaderKey]['nation'] ?? ''));
+        usort($topUsers, fn($a, $b) => ($b['score'] ?? 0) <=> ($a['score'] ?? 0));
         $topUsers = array_slice($topUsers, 0, 3);
 
         foreach ($topUsers as &$tu) {
-            if (in_array($tu['role'], ['Ditador Supremo', 'Ditador', 'Monarca'])) {
-                $tu['role'] = $powerLadder[0];
-            }
+            if (in_array(($tu['role'] ?? ''), ['Ditador Supremo', 'Ditador', 'Monarca'])) $tu['role'] = $powerLadder[0];
         }
         unset($tu);
 
-        // Vitalícios e Senadores
         foreach ($users as &$u) {
-            if ($u['role'] === 'Senador Vitalício' && $u['nation'] === $coupLeader['nation']) {
+            if (($u['role'] ?? '') === 'Senador Vitalício' && ($u['nation'] ?? '') === ($users[$leaderKey]['nation'] ?? '')) {
                 $u['role'] = $powerLadder[0];
             }
         }
         unset($u);
 
-        $senators = array_filter($users, fn($u) => $u['role'] === 'Senador' && $u['nation'] === $coupLeader['nation']);
-        usort($senators, fn($a, $b) => $b['score'] <=> $a['score']);
+        $senators = array_filter($users, fn($u) => ($u['role'] ?? '') === 'Senador' && ($u['nation'] ?? '') === ($users[$leaderKey]['nation'] ?? ''));
+        usort($senators, fn($a, $b) => ($b['score'] ?? 0) <=> ($a['score'] ?? 0));
         $senators = array_slice($senators, 0, 3);
-        foreach ($senators as &$sen) {
-            $sen['role'] = 'Senador Vitalício';
-        }
-        unset($sen);
+        foreach ($senators as &$s) { $s['role'] = 'Senador Vitalício'; }
+        unset($s);
 
-        // Atualizar líder e segundo colocado
-        $coupLeader['role'] = 'Ditador Supremo';
-        if (count($coupLeader['coup']['members']) > 1) {
-            $secondId = $coupLeader['coup']['members'][1];
-            foreach ($users as &$u) {
-                if ($u['id'] === $secondId) {
-                    $u['role'] = 'Ditador';
-                    break;
-                }
-            }
+        // líder = Ditador Supremo; 2º membro = Ditador
+        $users[$leaderKey]['role'] = 'Ditador Supremo';
+        if (count($users[$leaderKey]['coup']['members']) > 1) {
+            $secondId = $users[$leaderKey]['coup']['members'][1];
+            foreach ($users as &$u) { if (($u['id'] ?? null) === $secondId) { $u['role'] = 'Ditador'; break; } }
             unset($u);
         }
 
         saveAll();
 
         $news[] = [
-            'title' => "Golpe bem-sucedido em {$coupLeader['nation']}!",
-            'content' => "{$coupLeader['name']} é o novo Ditador Supremo.",
-            'date' => $gameDate['year']
+            'title'   => "Golpe bem-sucedido em " . ($users[$leaderKey]['nation'] ?? '') . "!",
+            'content' => ($users[$leaderKey]['name'] ?? 'Líder') . " é o novo Ditador Supremo.",
+            'date'    => $gameDate['year']
         ];
         writeFileJson($NEWS_FILE, $news);
     }
 
     saveAll();
-
     sendJson(['message' => 'Juntou-se ao golpe!']);
 }
 
-// --- ENDPOINT GET /news/:nation ---
-if (preg_match('#^/news/([^/]+)$#', $path, $matches) && $method === 'GET') {
-    $nation = urldecode($matches[1]);
-    global $news, $gameDate, $NATIONS;
+/** GET /news/:nation  (aceita com ou sem /server.php no caminho) */
+if ($method === 'GET') {
+    // casa /news/<nation> exatamente
+    if (preg_match('#^/news/([^/]+)$#i', $path, $m)) {
+        $nation = urldecode($m[1]);
+        if (!in_array($nation, $NATIONS)) sendJson(['message' => 'Nação inválida.'], 400);
 
-    if (!in_array($nation, $NATIONS)) sendJson(['message' => 'Nação inválida.'], 400);
-
-    $filteredNews = array_filter($news, fn($n) => isset($n['date']) && $n['date'] >= $gameDate['year'] - 1);
-    sendJson(['news' => array_values($filteredNews)]);
+        // Mantém a lógica original: retorna notícias do último ano de jogo
+        $filtered = array_filter($news, fn($n) => isset($n['date']) && $n['date'] >= ($gameDate['year'] - 1));
+        sendJson(['news' => array_values($filtered)]);
+    }
 }
 
-// --- ENDPOINT /post-news ---
+/** POST /post-news */
 if ($path === '/post-news' && $method === 'POST') {
     $data = getRequestData();
     $email = $data['email'] ?? null;
     $title = $data['title'] ?? null;
     $content = $data['content'] ?? null;
-    $isInternational = $data['isInternational'] ?? false;
-
-    global $users, $powerLadder, $NEWS_FILE, $news, $gameDate;
-
+    $isInternational = (bool)($data['isInternational'] ?? false);
     if (!$email || !$title || !$content) sendJson(['message' => 'Dados inválidos.'], 400);
 
-    $encryptedEmail = encryptBase64($email);
-    $userKey = findUserByEmail($users, $encryptedEmail);
-    if ($userKey === null) sendJson(['message' => 'Usuário não encontrado.'], 404);
+    $encEmail = encryptBase64($email);
+    $idx = findUserByEmail($users, $encEmail);
+    if ($idx === null) sendJson(['message' => 'Usuário não encontrado.'], 404);
 
-    $user = $users[$userKey];
-
-    $roleIndex = array_search($user['role'], $powerLadder);
+    $user = $users[$idx];
+    $roleIndex = array_search(($user['role'] ?? ''), $powerLadder);
     $minRoleIndex = array_search('Prefeito Corrupto', $powerLadder);
     if ($roleIndex === false || $roleIndex < $minRoleIndex) {
         sendJson(['message' => 'Apenas cargos de Prefeito Corrupto ou superior podem postar notícias.'], 403);
@@ -512,25 +502,19 @@ if ($path === '/post-news' && $method === 'POST') {
         'title' => $title,
         'content' => $content,
         'date' => $gameDate['year'],
-        'nation' => $user['nation'],
+        'nation' => $user['nation'] ?? null,
         'isInternational' => $isInternational
     ];
     writeFileJson($NEWS_FILE, $news);
-
     sendJson(['message' => 'Notícia postada!']);
 }
 
-// --- ENDPOINT /game-date ---
+/** GET /game-date */
 if ($path === '/game-date' && $method === 'GET') {
-    global $gameDate;
-
     $now = round(microtime(true) * 1000);
-    $elapsedMs = $now - $gameDate['lastUpdate'];
+    $elapsedMs = $now - ($gameDate['lastUpdate'] ?? $now);
 
-    $msPerDay = 2500; // 2.5 segundos por dia
-    $msPerMonth = $msPerDay * 30;
-    $msPerYear = $msPerMonth * 12;
-
+    $msPerDay = 2500;
     $totalDays = floor($elapsedMs / $msPerDay);
     $yearsPassed = floor($totalDays / 360);
     $remainingDays = $totalDays % 360;
@@ -542,14 +526,11 @@ if ($path === '/game-date' && $method === 'GET') {
     $gameDate['day'] = 1 + $daysPassed;
     $gameDate['lastUpdate'] = $now;
 
-    if ($gameDate['day'] > 30) {
-        $gameDate['day'] = 1;
-        $gameDate['month']++;
-    }
-    if ($gameDate['month'] > 12) {
-        $gameDate['month'] = 1;
-        $gameDate['year']++;
-    }
+    if ($gameDate['day'] > 30) { $gameDate['day'] = 1; $gameDate['month']++; }
+    if ($gameDate['month'] > 12) { $gameDate['month'] = 1; $gameDate['year']++; }
 
     sendJson($gameDate);
 }
+
+/* ===== 404 padrão ===== */
+sendJson(['message' => 'Rota não encontrada.'], 404);
