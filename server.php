@@ -66,8 +66,6 @@ function sendJson($data, $status = 200) {
     exit;
 }
 
-function encryptBase64($str) { return base64_encode($str); }
-
 function getRequestData() {
     $raw = file_get_contents('php://input');
     $data = json_decode($raw, true);
@@ -92,9 +90,9 @@ function getUserIP() {
     return $_SERVER['REMOTE_ADDR'] ?? 'unknown';
 }
 
-function findUserByEmail(&$users, $emailBase64) {
+function findUserByEmail(&$users, $email) {
     foreach ($users as $k => $u) {
-        if (isset($u['email']) && $u['email'] === $emailBase64) return $k;
+        if (isset($u['email']) && $u['email'] === $email) return $k;
     }
     return null;
 }
@@ -233,15 +231,14 @@ if ($path === '/register' && $method === 'POST') {
     if (!$name || !$email || !$password || !$nation || !in_array($nation, $NATIONS)) {
         sendJson(['message' => 'Dados inválidos.'], 400);
     }
-    $encEmail = encryptBase64($email);
-    if (findUserByEmail($users, $encEmail) !== null) {
+    if (findUserByEmail($users, $email) !== null) {
         sendJson(['message' => 'Email já cadastrado.'], 400);
     }
     $new = [
         'id' => count($users) + 1,
         'name' => $name,
-        'email' => $encEmail,
-        'password' => encryptBase64($password),
+        'email' => $email,
+        'password' => $password,
         'nation' => $nation,
         'role' => $powerLadder[0],
         'level' => 1,
@@ -266,8 +263,7 @@ if ($path === '/login' && $method === 'POST') {
     $password = $data['password'] ?? null;
     if (!$email) sendJson(['message' => 'Email é obrigatório.'], 400);
 
-    $encEmail = encryptBase64($email);
-    $idx = findUserByEmail($users, $encEmail);
+    $idx = findUserByEmail($users, $email);
     if ($idx === null) sendJson(['message' => 'Usuário não encontrado.'], 401);
 
     $userIP = getUserIP();
@@ -280,7 +276,7 @@ if ($path === '/login' && $method === 'POST') {
     }
 
     if (!$password) sendJson(['message' => 'Senha é obrigatória.'], 400);
-    if (($user['password'] ?? '') !== encryptBase64($password)) {
+    if (($user['password'] ?? '') !== $password) {
         sendJson(['message' => 'Senha incorreta.'], 401);
     }
 
