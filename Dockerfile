@@ -1,17 +1,18 @@
-FROM php:8.2-cli-bullseye
+FROM php:8.2-cli
 
-# Atualiza os pacotes do sistema para corrigir vulnerabilidades
-RUN apt-get update && apt-get upgrade -y && apt-get clean
+# Instala dependências do sistema para compilar PDO e SQLite
+RUN apt-get update && apt-get install -y \
+    libsqlite3-dev \
+    gcc \
+    make \
+    autoconf \
+    pkg-config \
+    && docker-php-ext-install pdo pdo_sqlite \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Instala extensões necessárias (PDO + SQLite)
-RUN docker-php-ext-install pdo pdo_sqlite
-
-# Copia os arquivos do projeto para /app
 COPY . /app
 WORKDIR /app
 
-# Expor a porta que o Render vai usar
 EXPOSE 10000
 
-# Rodar o servidor embutido do PHP com o server.php
-CMD php -S 0.0.0.0:10000
+CMD ["php", "-S", "0.0.0.0:10000"]
