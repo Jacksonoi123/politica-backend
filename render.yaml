@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: politica-backend
+    env: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
